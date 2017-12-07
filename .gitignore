@@ -1,0 +1,10 @@
+*.pkl
+*.pickle
+*.dill
+*.pt
+*.tar
+*.png
+*.txt
+
+data/
+runs/
