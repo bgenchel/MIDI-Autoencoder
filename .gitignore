@@ -5,6 +5,7 @@
 *.tar
 *.png
 *.txt
+*.pyc
 
 data/
 runs/
