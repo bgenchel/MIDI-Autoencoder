@@ -9,6 +9,7 @@ Most absolutely simple assumptions:
 from __future__ import print_function
 import argparse
 import cPickle as pickle
+import itertools
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -23,9 +24,34 @@ from datetime import datetime
 from pprint import pprint
 from src.custom_loss import myMSELoss
 from src.dataloaders import MHDataLoader
-from src.models import SimpleAutoencoder, MIDINetAutoencoder
+from src.models import SimpleEncoder, SimpleDecoder
 from src.utils.reverse_pianoroll import piano_roll_to_pretty_midi as pr2pm
 
+########## helper functions ##########
+def plot_series(series, show=False, save=True, title="", fpath="series_plot"):
+    plt.plot(series)
+    plt.title(title)
+    if show:
+        plt.show()
+        # plt.waitforbuttonpress()
+    if save:
+        plt.savefig(fpath)
+    plt.close()
+    return
+
+
+def compute_avg_loss(batched_data):
+    total_loss = 0.0
+    for batch in batched_data:
+        inpt = Variable(torch.FloatTensor(batch))
+        inpt = inpt.view(inpt.size()[0], np.prod(inpt.size()[1:]))
+        output = decoder(encoder(inpt))
+        output = output.view(batch.shape)
+        loss = loss_fn(output, inpt)
+        total_loss += loss.data[0]
+    avg_loss = total_loss/len(batched_data)
+    return avg_loss
+##############################
 
 np.random.seed(1)
 
@@ -55,7 +81,7 @@ parser.add_argument('-s', '--show', action='store_true',
 args = parser.parse_args()
 info_dict.update(vars(args))
 
-######## make a new directory to store data from this run ########
+########## make a new directory to store data from this run ##########
 datetime_string = datetime.now().strftime('%Y-%m-%d_%H:%M:%S')
 info_dict['run_time'] = datetime_string
 
@@ -64,13 +90,16 @@ if args.keep:
     if op.isdir(dirpath):
         raise IOError("path to target directory already exists.")
     os.makedirs(dirpath)
+##############################
 
-######## load full NxCxMxL dataset #######
+########## load full NxCxMxL dataset #########
     # N: Number of clips
     # C: Number of 'channels' for interpretation as an image (1)
     # M: Piano roll size, the number of midi notes that could possibly be 'on'
     # L: Clip length, in 100ths of a second
 dataset = pickle.load(open('../data/mh-midi-data.pickle', 'rb'))
+##############################
+
 ######## divide into train, validation, and test ########
 # based on the mean and standard deviation of non zero entries in the data, I've
 # found that the most populous, and thus best range of notes to take is from
@@ -89,43 +118,28 @@ batched_valid = valid_dataloader.get_batched_data(args.batch_size)
 test = dataset[int(len(dataset)*0.9):]
 test_dataloader = MHDataLoader(test, int(0.1*args.dataset_size))
 batched_test = test_dataloader.get_batched_data(args.batch_size)
+##############################
 
 midi_dim, clip_len = train.shape[2:]
 flattened_size = midi_dim*clip_len
+encoded_size = flattened_size/8  # replace this hard coding with something more flexible
 print("Training Set:")
 print("\tnumber of clips: %d"%train.shape[0])
 print("\tpiano roll size: %d"%midi_dim)
 print("\tclip length: %d"%clip_len)
 
-
-def plot_series(series, show=False, save=True, title="", fpath="series_plot"):
-    plt.plot(series)
-    plt.title(title)
-    if show:
-        plt.show()
-        # plt.waitforbuttonpress()
-    if save:
-        plt.savefig(fpath)
-    plt.close()
-    return
-
-def compute_avg_loss(batched_data):
-    total_loss = 0.0
-    for batch in batched_data:
-        inpt = Variable(torch.FloatTensor(batch))
-        output = net(inpt)
-        loss = loss_fn(output, inpt)
-        total_loss += loss.data[0]
-    avg_loss = total_loss/len(batched_data)
-    return avg_loss
-
 if args.architecture == "simple":
-    net = SimpleAutoencoder(flattened_size)
+    encoder = SimpleEncoder(flattened_size)
+    decoder = SimpleDecoder(encoded_size)
+    params = itertools.chain(encoder.parameters(), decoder.parameters())
+    # params = list(encoder.parameters()) + list(decoder.parameters())
     # optimizer = optim.SGD(net.parameters(), lr=args.learning_rate, momentum=args.momentum)
-    optimizer = optim.Adam(net.parameters(), lr=args.learning_rate)
+    optimizer = optim.Adam(params, lr=args.learning_rate)
 else:
-    net = MIDINetAutoencoder()
-    optimizer = optim.Adagrad(net.parameters(), lr=args.learning_rate)
+    raise ValueError("Only SimpleAutoencoder is implemented.")
+    sys.exit()
+    # net = MIDINetAutoencoder()
+    # optimizer = optim.Adagrad(net.parameters(), lr=args.learning_rate)
 
 loss_fn = nn.MSELoss(size_average=False)
 # loss_fn = myMSELoss(size_average=False)
@@ -145,14 +159,16 @@ try:
         for batch in batched_train:
             # get the data, wrap it in a Variable
             inpt = Variable(torch.FloatTensor(batch))
+            inpt = inpt.view(inpt.size()[0], np.prod(inpt.size()[1:]))
             # zero the parameter gradients
             optimizer.zero_grad()
-            # forward + backward + optimize
-            output = net(inpt)
+            # forward pass
+            output = decoder(encoder(inpt))
+            output = output.view(batch.shape)
+            # backward + optimize
             loss = loss_fn(output, inpt)
             loss.backward()
             optimizer.step()
-
             # print stats out
             avg_loss += loss.data[0]
             epoch_loss += loss.data[0]
@@ -175,10 +191,12 @@ test_loss = compute_avg_loss(batched_test)
 print('test loss: %.5f'%test_loss)
 
 info_dict.update({'interrupted': interrupted,
+                  'epochs_completed': len(train_losses),
                   'final_training_loss': train_losses[-1],
                   'final_validation_loss': valid_losses[-1],
                   'test_loss': test_loss,
-                  'network': net.parameters()})
+                  'network_parameters': {'encoder': list(encoder.parameters()),
+                                         'decoder': list(decoder.parameters())}})
 
 plot_series(train_losses, show=args.show, save=args.keep,
             title="Training Losses", fpath=op.join(dirpath, 'losses'))
@@ -191,8 +209,11 @@ num_clips = (100/clip_len)*8 # 8 sec ~ 1 song
 # num_clips = args.dataset_size
 song = train[:num_clips]
 song_array = np.concatenate(song[:, 0, :, :], axis=1)
-output = net(Variable(torch.FloatTensor(song)))
-output_array = np.concatenate(output.data.numpy()[:, 0, :, :], axis=1)
+song_var = Variable(torch.FloatTensor(song))
+song_var = song_var.view(song_var.size()[0], np.prod(song_var.size()[1:]))
+decoded_song_var = decoder(encoder(song_var))
+decoded_song = decoded_song_var.view(song.shape).data.numpy()
+decoded_song_array = np.concatenate(decoded_song[:, 0, :, :], axis=1)
 
 fig = plt.figure()
 fig.suptitle("Autoencoding of Training Data")
@@ -201,7 +222,7 @@ top.set_title("Input")
 top.imshow(song_array, aspect='auto')
 bottom = fig.add_subplot(2, 1, 2)
 bottom.set_title("Output")
-bottom.imshow(output_array, aspect='auto')
+bottom.imshow(decoded_song_array, aspect='auto')
 fig.subplots_adjust(top=0.95)
 fig.tight_layout()
 if args.show:
@@ -212,7 +233,7 @@ if args.keep:
 plt.close()
 
 midi_array = np.zeros((128, clip_len*num_clips))
-midi_array[MIDI_LOW:MIDI_HIGH] = output_array
+midi_array[MIDI_LOW:MIDI_HIGH] = decoded_song_array
 outmidi = pr2pm(midi_array.round())
 
 if args.keep:
@@ -223,4 +244,5 @@ if args.keep:
             fp.write('%s:\t %s'%(str(k), str(v)))
         fp.close()
 
-    torch.save(net.state_dict(), 'model_state.tar')
+    torch.save({'encoder': encoder.state_dict(), 'decoder': decoder.state_dict()},
+               op.join(dirpath, 'model_state.pt'))
