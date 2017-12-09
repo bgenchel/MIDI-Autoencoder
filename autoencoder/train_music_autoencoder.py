@@ -22,9 +22,9 @@ import torch.optim as optim
 from torch.autograd import Variable
 from datetime import datetime
 from pprint import pprint
-from src.custom_loss import myMSELoss
+from src.custom_loss import myMSELoss, WeightedBCELoss
 from src.dataloaders import MHDataLoader
-from src.models import SimpleEncoder, SimpleDecoder
+from src.models import SimpleEncoder, SimpleDecoder, ConvEncoder, ConvDecoder
 from src.utils.reverse_pianoroll import piano_roll_to_pretty_midi as pr2pm
 
 ########## helper functions ##########
@@ -44,7 +44,7 @@ def compute_avg_loss(batched_data):
     total_loss = 0.0
     for batch in batched_data:
         inpt = Variable(torch.FloatTensor(batch))
-        inpt = inpt.view(inpt.size()[0], np.prod(inpt.size()[1:]))
+        # inpt = inpt.view(inpt.size()[0], np.prod(inpt.size()[1:]))
         output = decoder(encoder(inpt))
         output = output.view(batch.shape)
         loss = loss_fn(output, inpt)
@@ -58,11 +58,14 @@ np.random.seed(1)
 MIDI_LOW = 48
 MIDI_HIGH = 84
 
-info_dict = {'midi_low': MIDI_LOW, 'midi_high': MIDI_HIGH}
+run_datetime_str = datetime.now().strftime('%Y-%m-%d_%H:%M:%S')
+info_dict = {'midi_low': MIDI_LOW,
+             'midi_high': MIDI_HIGH,
+             'run_datetime': run_datetime_str}
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-a', '--architecture', default='simple',
-                    choices=('simple', 'midinet'),
+                    choices=('simple', 'conv', 'midinet'),
                     help="either simple or midi_net")
 parser.add_argument('-e', '--epochs', default=2, type=int,
                     help="number of training epochs")
@@ -78,19 +81,10 @@ parser.add_argument('-k', '--keep', action='store_true',
                     help="save information about this run")
 parser.add_argument('-s', '--show', action='store_true',
                     help="show figures as they are generated")
+parser.add_argument('-t', '--title', default=run_datetime_str, type=str,
+                    help="custom title for run data directory")
 args = parser.parse_args()
 info_dict.update(vars(args))
-
-########## make a new directory to store data from this run ##########
-datetime_string = datetime.now().strftime('%Y-%m-%d_%H:%M:%S')
-info_dict['run_time'] = datetime_string
-
-dirpath = op.join('runs', datetime_string)
-if args.keep:
-    if op.isdir(dirpath):
-        raise IOError("path to target directory already exists.")
-    os.makedirs(dirpath)
-##############################
 
 ########## load full NxCxMxL dataset #########
     # N: Number of clips
@@ -131,20 +125,26 @@ print("\tclip length: %d"%clip_len)
 if args.architecture == "simple":
     encoder = SimpleEncoder(flattened_size)
     decoder = SimpleDecoder(encoded_size)
-    params = itertools.chain(encoder.parameters(), decoder.parameters())
-    # params = list(encoder.parameters()) + list(decoder.parameters())
-    # optimizer = optim.SGD(net.parameters(), lr=args.learning_rate, momentum=args.momentum)
-    optimizer = optim.Adam(params, lr=args.learning_rate)
+elif args.architecture == "conv":
+    enc_channels = [8, 16]
+    dec_channels = enc_channels[::-1]
+    encoder = ConvEncoder(train[0].shape, enc_channels)
+    decoder = ConvDecoder(encoder.output_dim, dec_channels, train[0].shape)
 else:
     raise ValueError("Only SimpleAutoencoder is implemented.")
-    sys.exit()
     # net = MIDINetAutoencoder()
-    # optimizer = optim.Adagrad(net.parameters(), lr=args.learning_rate)
 
-loss_fn = nn.MSELoss(size_average=False)
+params = itertools.chain(encoder.parameters(), decoder.parameters())
+optimizer = optim.Adam(params, lr=args.learning_rate)
+# optimizer = optim.SGD(net.parameters(), lr=args.learning_rate, momentum=args.momentum)
+# optimizer = optim.Adagrad(net.parameters(), lr=args.learning_rate)
+
+# loss_fn = nn.MSELoss(size_average=False)
 # loss_fn = myMSELoss(size_average=False)
 # loss_fn = SpiralLoss()
 # loss_fn = nn.L1Loss()
+loss_fn = WeightedBCELoss(size_average=True, one_weight=10)
+# loss_fn = nn.BCELoss()
 
 try:
     interrupted = False
@@ -159,7 +159,6 @@ try:
         for batch in batched_train:
             # get the data, wrap it in a Variable
             inpt = Variable(torch.FloatTensor(batch))
-            inpt = inpt.view(inpt.size()[0], np.prod(inpt.size()[1:]))
             # zero the parameter gradients
             optimizer.zero_grad()
             # forward pass
@@ -177,31 +176,37 @@ try:
                     epoch + 1, batch_count + 1, avg_loss / print_every))
                 avg_loss = 0.0
             batch_count += 1
-        print('average epoch loss: %f'%(epoch_loss/batch_count))
+        print('Average Epoch Loss: %f'%(epoch_loss/batch_count))
         train_losses.append(epoch_loss/batch_count)
         valid_loss = compute_avg_loss(batched_valid)
         valid_losses.append(valid_loss)
-        print('validation loss: %.5f'%valid_loss)
+        print('Validation Loss: %.5f'%valid_loss)
     print('Finished Training')
 except KeyboardInterrupt:
     print('Training Interrupted')
     interrupted = True
 
 test_loss = compute_avg_loss(batched_test)
-print('test loss: %.5f'%test_loss)
+print('Test Loss: %.5f'%test_loss)
 
 info_dict.update({'interrupted': interrupted,
                   'epochs_completed': len(train_losses),
                   'final_training_loss': train_losses[-1],
                   'final_validation_loss': valid_losses[-1],
-                  'test_loss': test_loss,
-                  'network_parameters': {'encoder': list(encoder.parameters()),
-                                         'decoder': list(decoder.parameters())}})
+                  'test_loss': test_loss})
+
+########## make a new directory to store data from this run ##########
+dirpath = op.join('runs', args.title)
+if args.keep:
+    if op.isdir(dirpath):
+        raise IOError("path to run data directory already exists.")
+    os.makedirs(dirpath)
+##############################
 
 plot_series(train_losses, show=args.show, save=args.keep,
-            title="Training Losses", fpath=op.join(dirpath, 'losses'))
+            title="Training Losses", fpath=op.join(dirpath, 'train_losses'))
 plot_series(valid_losses, show=args.show, save=args.keep,
-            title="Valid Losses", fpath=op.join(dirpath, 'losses'))
+            title="Validation Losses", fpath=op.join(dirpath, 'valid_losses'))
 
 # output some autencoded input. Guess that 8 clips is about one song, since 1 clip
 # should be about 1 second on audio.
@@ -210,7 +215,6 @@ num_clips = (100/clip_len)*8 # 8 sec ~ 1 song
 song = train[:num_clips]
 song_array = np.concatenate(song[:, 0, :, :], axis=1)
 song_var = Variable(torch.FloatTensor(song))
-song_var = song_var.view(song_var.size()[0], np.prod(song_var.size()[1:]))
 decoded_song_var = decoder(encoder(song_var))
 decoded_song = decoded_song_var.view(song.shape).data.numpy()
 decoded_song_array = np.concatenate(decoded_song[:, 0, :, :], axis=1)
@@ -227,22 +231,25 @@ fig.subplots_adjust(top=0.95)
 fig.tight_layout()
 if args.show:
     plt.show()
-    # plt.waitforbuttonpress()
 if args.keep:
     plt.savefig(op.join(dirpath, 'output_comparison'))
 plt.close()
 
-midi_array = np.zeros((128, clip_len*num_clips))
-midi_array[MIDI_LOW:MIDI_HIGH] = decoded_song_array
-outmidi = pr2pm(midi_array.round())
-
 if args.keep:
+    print('Creating output midi file ...')
+    midi_array = np.zeros((128, clip_len*num_clips))
+    midi_array[MIDI_LOW:MIDI_HIGH] = decoded_song_array
+    outmidi = pr2pm(midi_array.round())
+
+    print('Writing output midi file ...')
     outmidi.write(op.join(dirpath, 'autoencoded_midi.mid'))
 
-    with open(op.join(dirpath, 'info.txt')) as fp:
-        for k,v in info_dict.iteritems():
-            fp.write('%s:\t %s'%(str(k), str(v)))
+    print('Writing run info file ...')
+    with open(op.join(dirpath, 'info.txt'), 'wb') as fp:
+        for k, v in info_dict.iteritems():
+            fp.write('%s:\t %s\n'%(str(k), str(v)))
         fp.close()
 
+    print('Saving models ...')
     torch.save({'encoder': encoder.state_dict(), 'decoder': decoder.state_dict()},
                op.join(dirpath, 'model_state.pt'))

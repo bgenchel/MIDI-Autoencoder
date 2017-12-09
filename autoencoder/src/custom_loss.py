@@ -1,16 +1,43 @@
+import numpy as np
 import torch
 from torch.autograd import Variable
 
 def myMSELoss(size_average=True):
-    def mse(inpt, outpt):
-        assert inpt.size() == outpt.size()
-        flat_in = inpt.view(-1, torch.prod(inpt.size()))
-        flat_out = outpt.view(-1, torch.prod(outpt.size()))
-        error = torch.sum(torch.pow(flat_in - flat_out, 2))
+    def mse(output, target):
+        assert type(output) == Variable
+        assert type(target) == Variable
+        assert output.size() == target.size()
+        flat_output = output.view(-1, torch.prod(output.size()))
+        flat_target = target.view(-1, torch.prod(target.size()))
+        error = torch.sum(torch.pow(flat_output - flat_target, 2))
         if size_average:
-            error /= len(flat_in)
+            error /= len(flat_target)
         return error
     return mse
+
+
+def WeightedBCELoss(size_average=True, one_weight=1, zero_weight=1):
+    """
+    parameters:
+        size_average:  take the average of the loss over all elements
+        one_weight:  the weight of the loss in the case that a 1 is misclassified
+        zero_weight:  the weight of the loss in the case that a 0 is misclassified
+    """
+    def wbce(output, target):
+        assert type(output) == Variable
+        assert type(target) == Variable
+        assert output.size() == target.size()
+        epsilon = 1e-6
+        ones = Variable(torch.ones(output.size()))
+        one_error = one_weight*(target*torch.log(output + ones*epsilon))
+        zero_error = zero_weight*((ones - target)*torch.log(ones - output + ones*epsilon))
+        error = -torch.sum(one_error + zero_error)
+        if size_average:
+            n = np.prod(output.size())
+            error /= n
+        return error
+    return wbce
+
 
 def SpiralLoss():
     def spiral_loss(input, output):

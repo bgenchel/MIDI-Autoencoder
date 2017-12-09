@@ -56,7 +56,7 @@ def piano_roll_to_pretty_midi(piano_roll, fs=100, program=0):
                 prev_velocities[note] = velocity
         else:
             pm_note = pretty_midi.Note(
-                velocity=prev_velocities[note],
+                velocity=prev_velocities[note]*50, # because input is 1/0
                 pitch=note,
                 start=note_on_time[note],
                 end=time)
