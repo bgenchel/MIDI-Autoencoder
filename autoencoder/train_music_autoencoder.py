@@ -20,6 +20,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.autograd import Variable
+from collections import OrderedDict
 from datetime import datetime
 from pprint import pprint
 from src.custom_loss import myMSELoss, WeightedBCELoss
@@ -59,11 +60,14 @@ MIDI_LOW = 48
 MIDI_HIGH = 84
 
 run_datetime_str = datetime.now().strftime('%Y-%m-%d_%H:%M:%S')
-info_dict = {'midi_low': MIDI_LOW,
-             'midi_high': MIDI_HIGH,
-             'run_datetime': run_datetime_str}
+info_dict = OrderedDict()
+info_dict['run_datetime'] = run_datetime_str
+info_dict['midi_low'] = MIDI_LOW
+info_dict['midi_high'] = MIDI_HIGH
 
 parser = argparse.ArgumentParser()
+parser.add_argument('-t', '--title', default=run_datetime_str, type=str,
+                    help="custom title for run data directory")
 parser.add_argument('-a', '--architecture', default='simple',
                     choices=('simple', 'conv', 'midinet'),
                     help="either simple or midi_net")
@@ -81,8 +85,6 @@ parser.add_argument('-k', '--keep', action='store_true',
                     help="save information about this run")
 parser.add_argument('-s', '--show', action='store_true',
                     help="show figures as they are generated")
-parser.add_argument('-t', '--title', default=run_datetime_str, type=str,
-                    help="custom title for run data directory")
 args = parser.parse_args()
 info_dict.update(vars(args))
 
@@ -98,10 +100,11 @@ dataset = pickle.load(open('../data/mh-midi-data.pickle', 'rb'))
 # based on the mean and standard deviation of non zero entries in the data, I've
 # found that the most populous, and thus best range of notes to take is from
 # 48 to 84 (C2 - C5); this is 3 octaves
-np.random.shuffle(dataset)
+# np.random.shuffle(dataset)
 dataset = dataset[:, :, MIDI_LOW:MIDI_HIGH, :]
 
 train = dataset[:int(len(dataset)*0.8)]
+np.random.shuffle(train)
 train_dataloader = MHDataLoader(train, args.dataset_size)
 batched_train = train_dataloader.get_batched_data(args.batch_size)
 
@@ -189,11 +192,11 @@ except KeyboardInterrupt:
 test_loss = compute_avg_loss(batched_test)
 print('Test Loss: %.5f'%test_loss)
 
-info_dict.update({'interrupted': interrupted,
-                  'epochs_completed': len(train_losses),
-                  'final_training_loss': train_losses[-1],
-                  'final_validation_loss': valid_losses[-1],
-                  'test_loss': test_loss})
+info_dict['interrupted'] = interrupted,
+info_dict['epochs_completed'] = len(train_losses)
+info_dict['final_training_loss'] = train_losses[-1]
+info_dict['final_validation_loss'] = valid_losses[-1]
+info_dict['test_loss'] = test_loss
 
 ########## make a new directory to store data from this run ##########
 dirpath = op.join('runs', args.title)
@@ -246,8 +249,10 @@ if args.keep:
 
     print('Writing run info file ...')
     with open(op.join(dirpath, 'info.txt'), 'wb') as fp:
+        max_kw_len = max([len(key) for key in info_dict.keys()])
         for k, v in info_dict.iteritems():
-            fp.write('%s:\t %s\n'%(str(k), str(v)))
+            space_buffer = ' '*(max_kw_len - len(k))
+            fp.write('%s:%s\t %s\n'%(str(k), space_buffer, str(v)))
         fp.close()
 
     print('Saving models ...')
