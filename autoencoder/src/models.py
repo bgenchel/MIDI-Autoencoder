@@ -23,8 +23,9 @@ class SimpleEncoder(nn.Module):
 
 class SimpleDecoder(nn.Module):
 
-    def __init__(self, input_dim, **kwargs):
+    def __init__(self, input_dim, apply_sigmoid=False, **kwargs):
         super(SimpleDecoder, self).__init__(**kwargs)
+        self.apply_sigmoid = apply_sigmoid
         self.fc4 = nn.Linear(input_dim, input_dim*2)
         self.fc5 = nn.Linear(input_dim*2, input_dim*4)
         self.fc6 = nn.Linear(input_dim*4, input_dim*8)
@@ -34,7 +35,9 @@ class SimpleDecoder(nn.Module):
     def forward(self, enc):
         enc = F.relu(self.fc4(enc))
         enc = F.relu(self.fc5(enc))
-        dec = self.sigmoid(self.fc6(enc))
+        dec = self.fc6(enc)
+        if self.apply_sigmoid:
+            dec = self.sigmoid(dec)
         return dec
 
 
@@ -85,8 +88,10 @@ class ConvEncoder(nn.Module):
 
 class ConvDecoder(nn.Module):
 
-    def __init__(self, input_dim, channels, output_dim, **kwargs):
+    def __init__(self, input_dim, channels, output_dim, apply_sigmoid=False, **kwargs):
         super(ConvDecoder, self).__init__(**kwargs)
+        self.apply_sigmoid = apply_sigmoid
+
         self.fc1 = nn.Linear(input_dim, input_dim*2)
         self.fc2 = nn.Linear(input_dim*2, input_dim*4)
 
@@ -101,6 +106,7 @@ class ConvDecoder(nn.Module):
         self.tconv1 = nn.ConvTranspose2d(self.l1_cin, self.l1_cout, self.l1_kernel_size,
                                          stride=self.l1_stride, output_padding=(0, 1))
         self.tconv2 = nn.ConvTranspose2d(self.l1_cout, self.l2_cout, self.l2_kernel_size)
+        self.sigmoid = nn.Sigmoid()
         return
 
     def forward(self, enc):
@@ -111,6 +117,8 @@ class ConvDecoder(nn.Module):
         enc = enc.view(enc.size()[0], self.l1_cin, 1, -1)
         enc = F.relu(self.tconv1(enc))
         dec = self.tconv2(enc)
+        if self.apply_sigmoid:
+            dec = self.sigmoid(dec)
         return dec
 
 

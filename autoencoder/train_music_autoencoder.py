@@ -32,11 +32,11 @@ from src.utils.reverse_pianoroll import piano_roll_to_pretty_midi as pr2pm
 def plot_series(series, show=False, save=True, title="", fpath="series_plot"):
     plt.plot(series)
     plt.title(title)
+    if save:
+        plt.savefig(fpath)
     if show:
         plt.show()
         # plt.waitforbuttonpress()
-    if save:
-        plt.savefig(fpath)
     plt.close()
     return
 
@@ -71,6 +71,11 @@ parser.add_argument('-t', '--title', default=run_datetime_str, type=str,
 parser.add_argument('-a', '--architecture', default='simple',
                     choices=('simple', 'conv', 'midinet'),
                     help="either simple or midi_net")
+parser.add_argument('-l', '--loss_fn', default='mse',
+                    choices=('mse', 'wbce', 'bce', 'spiral', 'l1'),
+                    help="loss function to use")
+parser.add_argument('-n', '--dataset_size', default=1000, type=int,
+                    help="number of training samples to include in training")
 parser.add_argument('-e', '--epochs', default=2, type=int,
                     help="number of training epochs")
 parser.add_argument('-b', '--batch_size', default=10, type=int,
@@ -79,8 +84,6 @@ parser.add_argument('-lr', '--learning_rate', default=1e-3, type=float,
                     help="learning rate for sgd")
 parser.add_argument('-m', '--momentum', default=0.9, type=float,
                     help="learning rate for sgd")
-parser.add_argument('-n', '--dataset_size', default=1000, type=int,
-                    help="number of training samples to include in training")
 parser.add_argument('-k', '--keep', action='store_true',
                     help="save information about this run")
 parser.add_argument('-s', '--show', action='store_true',
@@ -101,19 +104,19 @@ dataset = pickle.load(open('../data/mh-midi-data.pickle', 'rb'))
 # found that the most populous, and thus best range of notes to take is from
 # 48 to 84 (C2 - C5); this is 3 octaves
 # np.random.shuffle(dataset)
-dataset = dataset[:, :, MIDI_LOW:MIDI_HIGH, :]
+dataset = dataset[:args.dataset_size, :, MIDI_LOW:MIDI_HIGH, :]
 
 train = dataset[:int(len(dataset)*0.8)]
 np.random.shuffle(train)
-train_dataloader = MHDataLoader(train, args.dataset_size)
+train_dataloader = MHDataLoader(train)
 batched_train = train_dataloader.get_batched_data(args.batch_size)
 
 valid = dataset[int(len(dataset)*0.8):int(len(dataset)*0.9)]
-valid_dataloader = MHDataLoader(valid, int(0.1*args.dataset_size))
+valid_dataloader = MHDataLoader(valid)
 batched_valid = valid_dataloader.get_batched_data(args.batch_size)
 
 test = dataset[int(len(dataset)*0.9):]
-test_dataloader = MHDataLoader(test, int(0.1*args.dataset_size))
+test_dataloader = MHDataLoader(test)
 batched_test = test_dataloader.get_batched_data(args.batch_size)
 ##############################
 
@@ -125,14 +128,16 @@ print("\tnumber of clips: %d"%train.shape[0])
 print("\tpiano roll size: %d"%midi_dim)
 print("\tclip length: %d"%clip_len)
 
+apply_sigmoid = (args.loss_fn in ("wbce", "bce"))
 if args.architecture == "simple":
     encoder = SimpleEncoder(flattened_size)
-    decoder = SimpleDecoder(encoded_size)
+    decoder = SimpleDecoder(encoded_size, apply_sigmoid=apply_sigmoid)
 elif args.architecture == "conv":
     enc_channels = [8, 16]
     dec_channels = enc_channels[::-1]
     encoder = ConvEncoder(train[0].shape, enc_channels)
-    decoder = ConvDecoder(encoder.output_dim, dec_channels, train[0].shape)
+    decoder = ConvDecoder(encoder.output_dim, dec_channels, train[0].shape,
+                          apply_sigmoid=apply_sigmoid)
 else:
     raise ValueError("Only SimpleAutoencoder is implemented.")
     # net = MIDINetAutoencoder()
@@ -142,18 +147,24 @@ optimizer = optim.Adam(params, lr=args.learning_rate)
 # optimizer = optim.SGD(net.parameters(), lr=args.learning_rate, momentum=args.momentum)
 # optimizer = optim.Adagrad(net.parameters(), lr=args.learning_rate)
 
-# loss_fn = nn.MSELoss(size_average=False)
-# loss_fn = myMSELoss(size_average=False)
-# loss_fn = SpiralLoss()
-# loss_fn = nn.L1Loss()
-loss_fn = WeightedBCELoss(size_average=True, one_weight=10)
-# loss_fn = nn.BCELoss()
+if args.loss_fn == "mse":
+    loss_fn = nn.MSELoss(size_average=False)
+    # loss_fn = myMSELoss(size_average=False)
+elif args.loss_fn == "wbce":
+    loss_fn = WeightedBCELoss(size_average=True, one_weight=10)
+elif args.loss_fn == "bce":
+    loss_fn = nn.BCELoss()
+elif args.loss_fn == "l1":
+    loss_fn = nn.L1Loss()
+elif args.loss_fn == "spiral":
+    raise ValueError("Spiral Loss is not fully implemented.")
+    # loss_fn = SpiralLoss()
 
 try:
     interrupted = False
     train_losses = []
     valid_losses = []
-    print_every = 1
+    print_every = 5
     print("Beginning Training")
     for epoch in xrange(args.epochs):
         batch_count = 0
@@ -232,10 +243,10 @@ bottom.set_title("Output")
 bottom.imshow(decoded_song_array, aspect='auto')
 fig.subplots_adjust(top=0.95)
 fig.tight_layout()
-if args.show:
-    plt.show()
 if args.keep:
     plt.savefig(op.join(dirpath, 'output_comparison'))
+if args.show:
+    plt.show()
 plt.close()
 
 if args.keep:
